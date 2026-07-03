@@ -19,14 +19,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Host key is pinned via the org variable SERVER_HOST_KEY (no per-run
+      # Host key is pinned via the org secret SERVER_HOST_KEY (no per-run
       # ssh-keyscan — that would be trust-on-first-use against whoever answers).
+      # A secret rather than a variable only because the org PAT lacks the
+      # Variables permission; the value is public info.
       - name: Configure SSH
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "${{ vars.SERVER_HOST_KEY }}" > ~/.ssh/known_hosts
+          printf '%s\n' "${{ secrets.SERVER_HOST_KEY }}" > ~/.ssh/known_hosts
 
       # Cache-bust .css/.js references in every .html so browsers always pick up
       # the latest deploy. Idempotent: only rewrites links without a query string.
