@@ -57,3 +57,22 @@ jobs:
             sleep $((i*3))
           done
           exit 1
+
+      # PocketBase hooks lane: pb_hooks/ (if the repo has one) goes to the
+      # instance's hooks dir through a SECOND, WRITE-ONLY jail
+      # (rrsync -wo /var/lib/pocketbase) with its own key — server-side code
+      # never mixes with the public site, and this lane can't read anything out.
+      - name: Deploy PocketBase hooks
+        if: ${{ hashFiles('pb_hooks/**') != '' }}
+        run: |
+          printf '%s\n' "${{ secrets.PB_HOOKS_SSH_KEY }}" > ~/.ssh/hooks_key
+          chmod 600 ~/.ssh/hooks_key
+          for i in 1 2 3 4 5; do
+            rsync -rlptz --delete \
+              -e "ssh -i ~/.ssh/hooks_key -o StrictHostKeyChecking=yes" \
+              ./pb_hooks/ "sol@${{ secrets.SERVER_IP }}:${{ github.event.repository.name }}/pb_hooks/" \
+              && exit 0
+            echo "hooks rsync attempt $i failed; retrying in $((i*3))s"
+            sleep $((i*3))
+          done
+          exit 1
