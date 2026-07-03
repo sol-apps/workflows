@@ -67,11 +67,16 @@ jobs:
       # create-app --backend pocketbase), NOT merely when pb_hooks/ has files.
       # That distinction is load-bearing: deleting your last hook empties
       # pb_hooks/ (git drops empty dirs), and a "run only if hooks exist" guard
-      # would then SKIP the sync, leaving the deleted hook live on prod forever.
+      # would SKIP the sync, leaving the deleted hook live on prod forever.
       # We mkdir an empty dir and rsync --delete so removal actually propagates.
+      # Gated in shell rather than `if: hashFiles(...)` — hashFiles proved
+      # unreliable for a single exact path (returned '' with the file present).
       - name: Deploy PocketBase hooks
-        if: ${{ hashFiles('pb-auth.js') != '' || hashFiles('pb_hooks/**') != '' }}
         run: |
+          if [ ! -f pb-auth.js ] && [ ! -d pb_hooks ]; then
+            echo "not a PocketBase-backed app (no pb-auth.js / pb_hooks) — skipping hooks lane"
+            exit 0
+          fi
           mkdir -p pb_hooks
           printf '%s\n' "${{ secrets.PB_HOOKS_SSH_KEY }}" > ~/.ssh/hooks_key
           chmod 600 ~/.ssh/hooks_key
