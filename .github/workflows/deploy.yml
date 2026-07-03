@@ -41,10 +41,19 @@ jobs:
       # Deploy key is jailed to `rrsync /var/www/apps`, so the target is RELATIVE:
       # <slug>/ -> /var/www/apps/<slug>/. pb_hooks/ is server-side code delivered
       # over its own lane — it must never be published on the public site.
+      # Retries cover rrsync's per-directory lock: concurrent deploys of
+      # DIFFERENT apps share the jail dir and collide ("Another instance of
+      # rrsync is already accessing this directory").
       - name: Deploy via rsync
         run: |
-          rsync -rlptz --delete \
-            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
-            --exclude '.git/' --exclude '.github/' --exclude 'README.md' \
-            --exclude 'pb_hooks/' \
-            ./ "sol@${{ secrets.SERVER_IP }}:${{ github.event.repository.name }}/"
+          for i in 1 2 3 4 5; do
+            rsync -rlptz --delete \
+              -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
+              --exclude '.git/' --exclude '.github/' --exclude 'README.md' \
+              --exclude 'pb_hooks/' \
+              ./ "sol@${{ secrets.SERVER_IP }}:${{ github.event.repository.name }}/" \
+              && exit 0
+            echo "rsync attempt $i failed; retrying in $((i*3))s"
+            sleep $((i*3))
+          done
+          exit 1
