@@ -1,0 +1,48 @@
+name: Deploy to solhann.net (reusable)
+
+# Shared pipeline for every solhann.net app repo. Callers need ~10 lines:
+#
+#   jobs:
+#     deploy:
+#       uses: sol-apps/workflows/.github/workflows/deploy.yml@main
+#       secrets: inherit
+#
+# The repo name IS the slug IS the subdomain — nothing is templated.
+# Editing this file changes deploy behaviour for every app on its next push.
+
+on:
+  workflow_call:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Host key is pinned via the org variable SERVER_HOST_KEY (no per-run
+      # ssh-keyscan — that would be trust-on-first-use against whoever answers).
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${{ vars.SERVER_HOST_KEY }}" > ~/.ssh/known_hosts
+
+      # Cache-bust .css/.js references in every .html so browsers always pick up
+      # the latest deploy. Idempotent: only rewrites links without a query string.
+      - name: Cache-bust asset URLs in HTML
+        run: |
+          v="${GITHUB_SHA:0:7}"
+          find . -maxdepth 3 -name '*.html' -not -path './.git/*' \
+            -exec sed -i -E "s#(\.(js|css))\"#\1?v=${v}\"#g" {} +
+
+      # Deploy key is jailed to `rrsync /var/www/apps`, so the target is RELATIVE:
+      # <slug>/ -> /var/www/apps/<slug>/. pb_hooks/ is server-side code delivered
+      # over its own lane — it must never be published on the public site.
+      - name: Deploy via rsync
+        run: |
+          rsync -rlptz --delete \
+            -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
+            --exclude '.git/' --exclude '.github/' --exclude 'README.md' \
+            --exclude 'pb_hooks/' \
+            ./ "sol@${{ secrets.SERVER_IP }}:${{ github.event.repository.name }}/"
