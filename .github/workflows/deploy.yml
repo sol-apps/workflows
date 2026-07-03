@@ -58,13 +58,21 @@ jobs:
           done
           exit 1
 
-      # PocketBase hooks lane: pb_hooks/ (if the repo has one) goes to the
-      # instance's hooks dir through a SECOND, WRITE-ONLY jail
-      # (rrsync -wo /var/lib/pocketbase) with its own key — server-side code
-      # never mixes with the public site, and this lane can't read anything out.
+      # PocketBase hooks lane: pb_hooks/ goes to the instance's hooks dir through
+      # a SECOND, WRITE-ONLY jail (rrsync -wo /var/lib/pocketbase) with its own
+      # key — server-side code never mixes with the public site, and this lane
+      # can't read anything out.
+      #
+      # Runs for any PocketBase-backed app (marker: pb-auth.js, written by
+      # create-app --backend pocketbase), NOT merely when pb_hooks/ has files.
+      # That distinction is load-bearing: deleting your last hook empties
+      # pb_hooks/ (git drops empty dirs), and a "run only if hooks exist" guard
+      # would then SKIP the sync, leaving the deleted hook live on prod forever.
+      # We mkdir an empty dir and rsync --delete so removal actually propagates.
       - name: Deploy PocketBase hooks
-        if: ${{ hashFiles('pb_hooks/**') != '' }}
+        if: ${{ hashFiles('pb-auth.js') != '' || hashFiles('pb_hooks/**') != '' }}
         run: |
+          mkdir -p pb_hooks
           printf '%s\n' "${{ secrets.PB_HOOKS_SSH_KEY }}" > ~/.ssh/hooks_key
           chmod 600 ~/.ssh/hooks_key
           for i in 1 2 3 4 5; do
