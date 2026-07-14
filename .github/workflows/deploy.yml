@@ -50,7 +50,7 @@ jobs:
             rsync -rlptz --delete \
               -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=yes" \
               --exclude '.git/' --exclude '.github/' --exclude 'README.md' \
-              --exclude 'pb_hooks/' \
+              --exclude 'pb_hooks/' --exclude 'pb_migrations/' \
               ./ "sol@${{ secrets.SERVER_IP }}:${{ github.event.repository.name }}/" \
               && exit 0
             echo "rsync attempt $i failed; retrying in $((i*3))s"
@@ -58,34 +58,39 @@ jobs:
           done
           exit 1
 
-      # PocketBase hooks lane: pb_hooks/ goes to the instance's hooks dir through
-      # a SECOND, WRITE-ONLY jail (rrsync -wo /var/lib/pocketbase) with its own
-      # key — server-side code never mixes with the public site, and this lane
-      # can't read anything out.
+      # PocketBase server-side lane: pb_hooks/ AND pb_migrations/ go to the
+      # instance's dir through a SECOND, WRITE-ONLY jail (rrsync -wo
+      # /var/lib/pocketbase) with its own key — server-side code never mixes
+      # with the public site, and this lane can't read anything out.
+      # Hooks hot-reload on arrival; migrations are applied by prod's
+      # pb-migrate@<slug>.path watcher (snapshot pb_data → migrate up →
+      # quarantine failures → health-check). Schema changes ship ONLY this way.
       #
       # Runs for any PocketBase-backed app (marker: pb-auth.js, written by
-      # create-app --backend pocketbase), NOT merely when pb_hooks/ has files.
-      # That distinction is load-bearing: deleting your last hook empties
-      # pb_hooks/ (git drops empty dirs), and a "run only if hooks exist" guard
-      # would SKIP the sync, leaving the deleted hook live on prod forever.
-      # We mkdir an empty dir and rsync --delete so removal actually propagates.
-      # Gated in shell rather than `if: hashFiles(...)` — hashFiles proved
-      # unreliable for a single exact path (returned '' with the file present).
-      - name: Deploy PocketBase hooks
+      # create-app --backend pocketbase), NOT merely when the dirs have files.
+      # That distinction is load-bearing: deleting your last hook/migration
+      # empties the dir (git drops empty dirs), and a "run only if files exist"
+      # guard would SKIP the sync, leaving the deleted file live on prod forever.
+      # We mkdir empty dirs and rsync --delete so removal actually propagates.
+      # Both dirs travel in ONE rsync call: one jail-lock acquisition, and hooks
+      # + their schema land together. Gated in shell rather than
+      # `if: hashFiles(...)` — hashFiles proved unreliable for a single exact
+      # path (returned '' with the file present).
+      - name: Deploy PocketBase hooks + migrations
         run: |
-          if [ ! -f pb-auth.js ] && [ ! -d pb_hooks ]; then
-            echo "not a PocketBase-backed app (no pb-auth.js / pb_hooks) — skipping hooks lane"
+          if [ ! -f pb-auth.js ] && [ ! -d pb_hooks ] && [ ! -d pb_migrations ]; then
+            echo "not a PocketBase-backed app (no pb-auth.js / pb_hooks / pb_migrations) — skipping server-side lane"
             exit 0
           fi
-          mkdir -p pb_hooks
+          mkdir -p pb_hooks pb_migrations
           printf '%s\n' "${{ secrets.PB_HOOKS_SSH_KEY }}" > ~/.ssh/hooks_key
           chmod 600 ~/.ssh/hooks_key
           for i in 1 2 3 4 5; do
             rsync -rlptz --delete \
               -e "ssh -i ~/.ssh/hooks_key -o StrictHostKeyChecking=yes" \
-              ./pb_hooks/ "sol@${{ secrets.SERVER_IP }}:${{ github.event.repository.name }}/pb_hooks/" \
+              ./pb_hooks ./pb_migrations "sol@${{ secrets.SERVER_IP }}:${{ github.event.repository.name }}/" \
               && exit 0
-            echo "hooks rsync attempt $i failed; retrying in $((i*3))s"
+            echo "server-side rsync attempt $i failed; retrying in $((i*3))s"
             sleep $((i*3))
           done
           exit 1
