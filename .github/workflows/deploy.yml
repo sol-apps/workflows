@@ -85,8 +85,14 @@ jobs:
           mkdir -p pb_hooks pb_migrations
           printf '%s\n' "${{ secrets.PB_HOOKS_SSH_KEY }}" > ~/.ssh/hooks_key
           chmod 600 ~/.ssh/hooks_key
+          # --checksum: fresh checkouts give every file a new mtime, which would
+          # re-upload unchanged hooks each deploy and make PB's hooks-watcher
+          # restart the instance (applying pending migrations BEFORE pb-migrate
+          # can snapshot pb_data). Content comparison keeps unchanged files
+          # untouched, so schema-only deploys are applied by pb-migrate alone,
+          # in the right snapshot-then-apply order.
           for i in 1 2 3 4 5; do
-            rsync -rlptz --delete \
+            rsync -rlptz --checksum --delete \
               -e "ssh -i ~/.ssh/hooks_key -o StrictHostKeyChecking=yes" \
               ./pb_hooks ./pb_migrations "sol@${{ secrets.SERVER_IP }}:${{ github.event.repository.name }}/" \
               && exit 0
