@@ -59,9 +59,15 @@ jobs:
           exit 1
 
       # PocketBase server-side lane: pb_hooks/ AND pb_migrations/ go to the
-      # instance's dir through a SECOND, WRITE-ONLY jail (rrsync -wo
-      # /var/lib/pocketbase) with its own key — server-side code never mixes
-      # with the public site, and this lane can't read anything out.
+      # instance's dir through a SECOND, WRITE-ONLY jail with its own key —
+      # server-side code never mixes with the public site, and this lane can't
+      # read anything out. PB_HOOKS_SSH_KEY is a PER-APP repo secret (installed
+      # by `pb-provision <slug> --deploy-key`); its prod authorized_keys line is
+      # forced to `pb-deploy-jail <slug>`, which pins the rsync destination to
+      # THIS app's dir before handing off to rrsync -wo. So a leaked/hostile app
+      # key can only overwrite its own pb_hooks/pb_migrations, not another app's.
+      # (The old ORG-wide key — one jail over all of /var/lib/pocketbase — was
+      # retired; a repo secret of the same name shadows any lingering org one.)
       # Hooks hot-reload on arrival; migrations are applied by prod's
       # pb-migrate@<slug>.path watcher (snapshot pb_data → migrate up →
       # quarantine failures → health-check). Schema changes ship ONLY this way.
