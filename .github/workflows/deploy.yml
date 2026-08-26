@@ -9,21 +9,202 @@ name: Deploy to solhann.net (reusable)
 #
 # The repo name IS the slug IS the subdomain — nothing is templated.
 # Editing this file changes deploy behaviour for every app on its next push.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ONE-ORG NOTE (2026-08-26). This file used to be a pure deployer: sol-apps was
+# prod, everything in it had already been promoted from sol-forge, and the org
+# boundary was what kept the build agent away from the credentials below. There
+# is no second org any more. What replaces it is TWO structural properties, and
+# both of them live in this file's job header rather than in anyone's discipline:
+#
+#   environment: prod   The prod environment's deployment branch policy admits
+#                       `main` ONLY. A run from a branch — which is where the
+#                       agent works — is refused entry to the environment BEFORE
+#                       the job starts: zero steps execute, so no step ever holds
+#                       SERVER_SSH_KEY or PB_HOOKS_SSH_KEY. Verified 2026-08-26
+#                       on sol-apps/deploy-test; a job with no `environment:` at
+#                       all reads the same secret as the empty string.
+#
+#   if !github.event.created
+#                       Generating a repo from the template writes main in one
+#                       ref-creation push, which fires this workflow before the
+#                       agent has written a line and before any human has seen
+#                       anything. Observed, not theorised: sol-apps/coin-toss,
+#                       2026-08-21, where the equivalent gap promoted a bare
+#                       scaffold to prod. workflow_dispatch leaves `created`
+#                       undefined, so the manual fallback still runs.
+#
+# Together those mean: merge to main IS deployment, and nothing else is.
+# ─────────────────────────────────────────────────────────────────────────────
 
 on:
   workflow_call:
 
+# checkout needs contents:read and nothing else wants GITHUB_TOKEN. The
+# provisioner dispatch below authenticates with a PAT, deliberately — see there.
+permissions:
+  contents: read
+
 jobs:
   deploy:
+    if: ${{ !github.event.created }}
     runs-on: ubuntu-latest
+    environment: prod
     steps:
       - uses: actions/checkout@v4
+
+      # ── Has this app ever been made real on prod? ───────────────────────────
+      # A repo can exist, be protected, be reviewed and be merged, and still have
+      # no PocketBase instance, no Caddy vhost and no deploy key — because under
+      # the one-org design NOTHING on prod is created until a human has approved
+      # a merge. The repo comes into being at draft time; the prod resources come
+      # into being here, on the first merged deploy. That ordering is the point:
+      # an abandoned draft leaves a GitHub repo and not a live server.
+      #
+      # THE TELL IS THE TOPIC, not the deploy key. `solhann-app` is set by the
+      # provisioner as its LAST act, so its presence means a full provisioning run
+      # finished. Using the topic rather than the key is what keeps the five
+      # static legacy apps (architecture, hello, snake-in-the-box, style-lab,
+      # swarm-lab) working: they are not PocketBase-backed, they have no
+      # PB_HOOKS_SSH_KEY and never needed one, and a key-only test would send every
+      # one of their deploys off to the provisioner forever.
+      #
+      # Asked ANONYMOUSLY over the public API. App repos are public by policy, so
+      # this needs no credential — and a step that runs before the provisioning
+      # decision is exactly where a credential should not be.
+      #
+      # The second clause is a self-heal, not a duplicate: a PocketBase-backed app
+      # that carries the topic but has lost its environment secret (deleted by
+      # hand, or a Phase-4 re-key that half-finished) is genuinely un-deployable,
+      # and the provisioner's job is precisely to put that key back. Provisioning
+      # is idempotent on both sides, so a false positive costs one wasted run.
+      - name: Decide whether this app still needs provisioning
+        id: gate
+        env:
+          SLUG: ${{ github.event.repository.name }}
+          HOOKS_KEY: ${{ secrets.PB_HOOKS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+
+          # A FAILED query must never be read as "not provisioned". That direction
+          # of error dispatches the provisioner, which re-dispatches this workflow,
+          # which asks again — a rate limit or an API blip would become a loop
+          # rather than an outage. So: 200 or stop. Same reasoning as greenlight's
+          # prodRepoExists, which throws rather than answering "free" on a 403.
+          code=$(curl -sS -o topics.json -w '%{http_code}' \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'User-Agent: solhann-deploy' \
+            "https://api.github.com/repos/sol-apps/$SLUG/topics")
+          if [ "$code" != "200" ]; then
+            echo "::error::cannot read topics for sol-apps/$SLUG — HTTP $code"
+            echo "::error::Refusing to guess: treating this as unprovisioned would dispatch the"
+            echo "::error::provisioner, which re-dispatches this deploy, which would ask again."
+            cat topics.json || true
+            exit 1
+          fi
+
+          if jq -e '.names | index("solhann-app")' topics.json >/dev/null; then
+            PROVISIONED=1
+          else
+            PROVISIONED=0
+          fi
+
+          # Same marker the server-side lane below uses, so the two cannot drift.
+          if [ -f pb-auth.js ] || [ -d pb_hooks ] || [ -d pb_migrations ]; then
+            PB_BACKED=1
+          else
+            PB_BACKED=0
+          fi
+
+          NEEDS=false
+          if [ "$PROVISIONED" = "0" ]; then
+            NEEDS=true
+            echo "▸ no solhann-app topic — this app has never been provisioned"
+          elif [ "$PB_BACKED" = "1" ] && [ -z "${HOOKS_KEY:-}" ]; then
+            NEEDS=true
+            echo "▸ PocketBase-backed but PB_HOOKS_SSH_KEY is empty — key needs reinstating"
+          elif [ "$PB_BACKED" = "1" ]; then
+            echo "▸ provisioned: topic present, hooks key present"
+          else
+            echo "▸ provisioned: topic present, static app (no PocketBase lane)"
+          fi
+          echo "needs_provision=$NEEDS" >> "$GITHUB_OUTPUT"
+
+      # ── First merged deploy: hand off to the provisioner and STOP ────────────
+      # Deliberately does not deploy anything on this pass. There is no vhost and
+      # no instance yet, so an rsync here would publish files to a URL that does
+      # not serve them and, worse, would look green. The provisioner creates the
+      # prod resources and then re-dispatches this very workflow, which runs again
+      # with the key in place and takes the normal path below.
+      #
+      # The dispatch uses a PAT, NOT GITHUB_TOKEN: a workflow started with
+      # GITHUB_TOKEN cannot itself trigger further workflow runs, so the
+      # provisioner's re-dispatch at the end of the chain would silently never
+      # fire and a merged PR would sit un-deployed behind a green tick.
+      #
+      # PROVISIONER_DISPATCH_TOKEN is a sol-apps org secret scoped to the app
+      # repos, `actions: write` on the provisioner repo only. The worst a leak
+      # buys is starting the provisioner — which re-derives everything it needs
+      # from prod-side and GitHub-side state and refuses anything unreviewed. It
+      # is safe to reference from a file the agent could in principle read for the
+      # same reason as before: the agent's PAT has Contents + Pull requests but
+      # NOT Workflows, so it cannot author a workflow that routes this secret into
+      # code it controls. That absence is load-bearing.
+      - name: Ask the provisioner to make this app real, then stop
+        if: steps.gate.outputs.needs_provision == 'true'
+        env:
+          TOKEN: ${{ secrets.PROVISIONER_DISPATCH_TOKEN }}
+          SLUG: ${{ github.event.repository.name }}
+          PROVISIONER: sol-apps/provisioner
+        run: |
+          set -euo pipefail
+
+          if [ -z "${TOKEN:-}" ]; then
+            echo "::error::PROVISIONER_DISPATCH_TOKEN is not set on the sol-apps org."
+            echo "::error::Without it a first merge never reaches prod. Set the org secret"
+            echo "::error::(fine-grained PAT, $PROVISIONER only, actions: write), scoped to the app repos."
+            exit 1
+          fi
+
+          payload=$(jq -nc --arg slug "$SLUG" '{ref: "main", inputs: {slug: $slug}}')
+
+          code=$(curl -sS -o response.txt -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -H "User-Agent: solhann-deploy" \
+            "https://api.github.com/repos/$PROVISIONER/actions/workflows/provision.yml/dispatches" \
+            -d "$payload")
+
+          # 204 No Content is the ONLY success for workflow_dispatch. Anything else
+          # must fail the run: a provisioning that was never started has to look as
+          # broken as one that failed, or the merge looks shipped and is not.
+          if [ "$code" != "204" ]; then
+            echo "::error::provisioner dispatch failed — HTTP $code"
+            cat response.txt
+            case "$code" in
+              401|403) echo "::error::token rejected: expired, revoked, or missing actions:write on $PROVISIONER" ;;
+              404)     echo "::error::$PROVISIONER or provision.yml not found — 404 is also what a token with no access returns" ;;
+              422)     echo "::error::the provisioner rejected the inputs, or provision.yml has no workflow_dispatch trigger on main" ;;
+            esac
+            exit 1
+          fi
+
+          echo "::notice::$SLUG is not provisioned yet — the provisioner has been dispatched and will re-run this deploy when prod is ready. Nothing was deployed on this pass."
+          {
+            echo "### \`$SLUG\` — handed off to the provisioner"
+            echo ""
+            echo "This app had no prod resources yet, so nothing was deployed on this pass."
+            echo "The provisioner is creating them now and will re-dispatch this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Host key is pinned via the org secret SERVER_HOST_KEY (no per-run
       # ssh-keyscan — that would be trust-on-first-use against whoever answers).
       # A secret rather than a variable only because the org PAT lacks the
       # Variables permission; the value is public info.
       - name: Configure SSH
+        if: steps.gate.outputs.needs_provision != 'true'
         run: |
           mkdir -p ~/.ssh
           printf '%s\n' "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/deploy_key
@@ -33,6 +214,7 @@ jobs:
       # Cache-bust .css/.js references in every .html so browsers always pick up
       # the latest deploy. Idempotent: only rewrites links without a query string.
       - name: Cache-bust asset URLs in HTML
+        if: steps.gate.outputs.needs_provision != 'true'
         run: |
           v="${GITHUB_SHA:0:7}"
           find . -maxdepth 3 -name '*.html' -not -path './.git/*' \
@@ -45,6 +227,7 @@ jobs:
       # DIFFERENT apps share the jail dir and collide ("Another instance of
       # rrsync is already accessing this directory").
       - name: Deploy via rsync
+        if: steps.gate.outputs.needs_provision != 'true'
         run: |
           for i in 1 2 3 4 5; do
             rsync -rlptz --delete \
@@ -61,13 +244,17 @@ jobs:
       # PocketBase server-side lane: pb_hooks/ AND pb_migrations/ go to the
       # instance's dir through a SECOND, WRITE-ONLY jail with its own key —
       # server-side code never mixes with the public site, and this lane can't
-      # read anything out. PB_HOOKS_SSH_KEY is a PER-APP repo secret (installed
-      # by `pb-provision <slug> --deploy-key`); its prod authorized_keys line is
+      # read anything out. PB_HOOKS_SSH_KEY is a PER-APP secret in the `prod`
+      # ENVIRONMENT (installed by the provisioner, or by
+      # `pb-provision <slug> --deploy-key`); its prod authorized_keys line is
       # forced to `pb-deploy-jail <slug>`, which pins the rsync destination to
       # THIS app's dir before handing off to rrsync -wo. So a leaked/hostile app
       # key can only overwrite its own pb_hooks/pb_migrations, not another app's.
-      # (The old ORG-wide key — one jail over all of /var/lib/pocketbase — was
-      # retired; a repo secret of the same name shadows any lingering org one.)
+      # (It moved from a repo secret to an environment secret in the one-org
+      # migration: a repo secret is readable by any run, including one the agent
+      # triggers from its own branch. An environment secret is not — the branch
+      # policy refuses the job. That is the containment the org boundary used
+      # to provide.)
       # Hooks hot-reload on arrival; migrations are applied by prod's
       # pb-migrate@<slug>.path watcher (snapshot pb_data → migrate up →
       # quarantine failures → health-check). Schema changes ship ONLY this way.
@@ -83,6 +270,7 @@ jobs:
       # `if: hashFiles(...)` — hashFiles proved unreliable for a single exact
       # path (returned '' with the file present).
       - name: Deploy PocketBase hooks + migrations
+        if: steps.gate.outputs.needs_provision != 'true'
         run: |
           if [ ! -f pb-auth.js ] && [ ! -d pb_hooks ] && [ ! -d pb_migrations ]; then
             echo "not a PocketBase-backed app (no pb-auth.js / pb_hooks / pb_migrations) — skipping server-side lane"
