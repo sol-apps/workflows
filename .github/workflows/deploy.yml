@@ -69,9 +69,14 @@ jobs:
       # PB_HOOKS_SSH_KEY and never needed one, and a key-only test would send every
       # one of their deploys off to the provisioner forever.
       #
-      # Asked ANONYMOUSLY over the public API. App repos are public by policy, so
-      # this needs no credential — and a step that runs before the provisioning
-      # decision is exactly where a credential should not be.
+      # Asked with the run's OWN GITHUB_TOKEN, which can read metadata for the repo it
+      # belongs to and nothing else. An earlier version asked anonymously, on the
+      # reasoning that app repos are public and a public question needs no credential.
+      # That is true of app repos and false of the control-plane ones that also call
+      # this workflow: sol-apps/greenlight is PRIVATE, an anonymous topics query
+      # against it returns 404, and the "refuse to guess" branch below would have
+      # failed every greenlight deploy. GITHUB_TOKEN is the smallest credential that
+      # answers correctly for both.
       #
       # The second clause is a self-heal, not a duplicate: a PocketBase-backed app
       # that carries the topic but has lost its environment secret (deleted by
@@ -83,6 +88,7 @@ jobs:
         env:
           SLUG: ${{ github.event.repository.name }}
           HOOKS_KEY: ${{ secrets.PB_HOOKS_SSH_KEY }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -93,6 +99,7 @@ jobs:
           # prodRepoExists, which throws rather than answering "free" on a 403.
           code=$(curl -sS -o topics.json -w '%{http_code}' \
             -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
             -H 'User-Agent: solhann-deploy' \
             "https://api.github.com/repos/sol-apps/$SLUG/topics")
           if [ "$code" != "200" ]; then
