@@ -110,7 +110,13 @@ jobs:
             exit 1
           fi
 
-          if jq -e '.names | index("solhann-app")' topics.json >/dev/null; then
+          # `solhann-platform` marks a PUBLIC control-plane repo that is live on
+          # prod but is not an app: sol-apps/create, the gallery. It must not carry
+          # `solhann-app`, because projects-sync check and test-deploy-guards.sh
+          # enumerate that topic and hold every repo with it to the review gate,
+          # which the control plane is not under. Setting either topic needs repo
+          # admin, which the bot never has, so the second one grants it nothing.
+          if jq -e '.names | (index("solhann-app") or index("solhann-platform"))' topics.json >/dev/null; then
             PROVISIONED=1
           else
             PROVISIONED=0
@@ -126,7 +132,7 @@ jobs:
           NEEDS=false
           if [ "$PROVISIONED" = "0" ]; then
             NEEDS=true
-            echo "▸ no solhann-app topic — this app has never been provisioned"
+            echo "▸ no solhann-app or solhann-platform topic — this app has never been provisioned"
           elif [ "$PB_BACKED" = "1" ] && [ -z "${HOOKS_KEY:-}" ]; then
             NEEDS=true
             echo "▸ PocketBase-backed but PB_HOOKS_SSH_KEY is empty — key needs reinstating"
