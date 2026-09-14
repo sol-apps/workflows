@@ -51,7 +51,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: prod
     steps:
-      - uses: actions/checkout@v4
+      # This job later receives production credentials. Keep the checkout dependency
+      # immutable so a moved marketplace tag cannot run new code in the same runner.
+      # actions/checkout v4.2.2, resolved from the official repository.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
       # ── Has this app ever been made real on prod? ───────────────────────────
       # A repo can exist, be protected, be reviewed and be merged, and still have
@@ -83,7 +86,7 @@ jobs:
       # hand, or a Phase-4 re-key that half-finished) is genuinely un-deployable,
       # and the provisioner's job is precisely to put that key back. Provisioning
       # is idempotent on both sides, so a false positive costs one wasted run.
-      - name: Decide whether this app still needs provisioning
+      - name: Derive trusted access policy and provisioning order
         id: gate
         env:
           SLUG: ${{ github.event.repository.name }}
@@ -110,16 +113,68 @@ jobs:
             exit 1
           fi
 
-          # `solhann-platform` marks a PUBLIC control-plane repo that is live on
-          # prod but is not an app: sol-apps/create, the gallery. It must not carry
-          # `solhann-app`, because projects-sync check and test-deploy-guards.sh
-          # enumerate that topic and hold every repo with it to the review gate,
-          # which the control plane is not under. Setting either topic needs repo
-          # admin, which the bot never has, so the second one grants it nothing.
           if jq -e '.names | (index("solhann-app") or index("solhann-platform"))' topics.json >/dev/null; then
             PROVISIONED=1
           else
             PROVISIONED=0
+          fi
+
+          KEYCLOAK_TOPIC=$(jq '[.names | index("access-keycloak")] | any' topics.json)
+          PUBLIC_TOPIC=$(jq '[.names | index("access-public")] | any' topics.json)
+          if [ "$KEYCLOAK_TOPIC" = true ] && [ "$PUBLIC_TOPIC" = true ]; then
+            echo "::error::both access-keycloak and access-public topics are present; refusing ambiguous policy"
+            exit 1
+          elif [ "$KEYCLOAK_TOPIC" = true ]; then
+            CURRENT_ACCESS=keycloak
+          elif [ "$PUBLIC_TOPIC" = true ]; then
+            CURRENT_ACCESS=public
+          else
+            CURRENT_ACCESS=unclassified
+          fi
+
+          DESIRED_ACCESS=legacy
+          if [ -f spec.json ]; then
+            DESIRED_ACCESS=$(jq -er '
+              if .access == null then "legacy"
+              elif (.access | type) != "object" then error("access must be an object")
+              elif (.access.mode != "keycloak" and .access.mode != "public") then error("invalid access.mode")
+              elif (.access.anonymous | type) != "array" then error("access.anonymous must be an array")
+              elif all(.access.anonymous[]; (type == "string") and ((gsub("^\\s+|\\s+$"; "") | length) > 0) and
+                ((gsub("^\\s+|\\s+$"; "") | ascii_downcase) != "all") and
+                ((gsub("^\\s+|\\s+$"; "") | ascii_downcase) != "everything") and
+                ((gsub("^\\s+|\\s+$"; "")) != "*")) | not then error("invalid anonymous surface")
+              elif .access.mode == "keycloak" and (.access.anonymous | length) != 0 then error("keycloak cannot be anonymous")
+              elif .access.mode == "public" and (.access.anonymous | length) == 0 then error("public must name anonymous surfaces")
+              elif .access.mode == "public" and
+                (([.access.anonymous[] | gsub("^\\s+|\\s+$"; "")] | unique | length) !=
+                 (.access.anonymous | length)) then error("duplicate anonymous surface")
+              elif .access.mode == "public" and
+                (all(.access.anonymous[];
+                  (gsub("^\\s+|\\s+$"; "") as $s |
+                   ((($s | test("^GET /[A-Za-z0-9._/-]*$")) and $s != "GET /api" and
+                     (($s | startswith("GET /api/")) | not)) or
+                    ($s | test("^(list|view|create|update|delete):[a-z][a-z0-9_]*$"))))) |
+                 not) then error("unsupported anonymous surface")
+              else .access.mode end' spec.json) || {
+                echo "::error::approved main has an invalid access policy in spec.json"
+                exit 1
+              }
+          fi
+          if [ "$PROVISIONED" = 0 ] && [ "$DESIRED_ACCESS" = legacy ]; then
+            echo "::error::a first deploy requires a deliberate spec.json access.mode"
+            exit 1
+          fi
+          if [ "$PROVISIONED" = 1 ] && [ "$DESIRED_ACCESS" != legacy ] && \
+             [ "$CURRENT_ACCESS" = unclassified ]; then
+            if [ "$DESIRED_ACCESS" != keycloak ] || \
+               ! jq -e '.access.transition.data | type == "string" and length > 0' spec.json >/dev/null || \
+               ! jq -e '.access.transition.tokens | type == "string" and length > 0' spec.json >/dev/null || \
+               ! jq -e '.access.transition.rollback | type == "string" and length > 0' spec.json >/dev/null; then
+              echo "::error::unclassified legacy app needs a reviewed Keycloak migration with data, tokens and rollback"
+              echo "::error::public cutover additionally requires an owner inventory of the current runtime"
+              exit 1
+            fi
+            echo "▸ reviewed legacy → Keycloak migration; identity will converge before app code"
           fi
 
           # Same marker the server-side lane below uses, so the two cannot drift.
@@ -133,6 +188,18 @@ jobs:
           if [ "$PROVISIONED" = "0" ]; then
             NEEDS=true
             echo "▸ no solhann-app or solhann-platform topic — this app has never been provisioned"
+          elif [ "$DESIRED_ACCESS" = public ] && [ "$CURRENT_ACCESS" = keycloak ]; then
+            echo "::error::Keycloak-to-public needs an app-specific staged migration; the generic deploy refuses mode changes"
+            exit 1
+          elif [ "$DESIRED_ACCESS" = keycloak ] && [ "$CURRENT_ACCESS" = public ]; then
+            echo "::error::public-to-Keycloak needs an app-specific staged migration; the generic deploy refuses mode changes"
+            exit 1
+          elif [ "$DESIRED_ACCESS" = public ] && [ "$CURRENT_ACCESS" = unclassified ]; then
+            echo "::error::an unclassified legacy app cannot be made public by the generic deploy"
+            exit 1
+          elif [ "$DESIRED_ACCESS" = keycloak ] && [ "$CURRENT_ACCESS" = unclassified ]; then
+            NEEDS=true
+            echo "▸ legacy Keycloak inventory will be verified and recorded before deploying code"
           elif [ "$PB_BACKED" = "1" ] && [ -z "${HOOKS_KEY:-}" ]; then
             NEEDS=true
             echo "▸ PocketBase-backed but PB_HOOKS_SSH_KEY is empty — key needs reinstating"
@@ -142,6 +209,7 @@ jobs:
             echo "▸ provisioned: topic present, static app (no PocketBase lane)"
           fi
           echo "needs_provision=$NEEDS" >> "$GITHUB_OUTPUT"
+          echo "access_mode=$DESIRED_ACCESS" >> "$GITHUB_OUTPUT"
 
       # ── First merged deploy: hand off to the provisioner and STOP ────────────
       # Deliberately does not deploy anything on this pass. There is no vhost and
@@ -204,12 +272,12 @@ jobs:
             exit 1
           fi
 
-          echo "::notice::$SLUG is not provisioned yet — the provisioner has been dispatched and will re-run this deploy when prod is ready. Nothing was deployed on this pass."
+          echo "::notice::$SLUG requires production convergence — the provisioner has been dispatched and will re-run this deploy when prod is ready. No app code was deployed on this pass."
           {
             echo "### \`$SLUG\` — handed off to the provisioner"
             echo ""
-            echo "This app had no prod resources yet, so nothing was deployed on this pass."
-            echo "The provisioner is creating them now and will re-dispatch this workflow."
+            echo "No app code was deployed on this pass."
+            echo "The provisioner is converging production state and will re-dispatch this workflow."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Host key is pinned via the org secret SERVER_HOST_KEY (no per-run
