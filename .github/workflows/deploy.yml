@@ -223,13 +223,13 @@ jobs:
       # provisioner's re-dispatch at the end of the chain would silently never
       # fire and a merged PR would sit un-deployed behind a green tick.
       #
-      # PROVISIONER_DISPATCH_TOKEN is a sol-apps org secret scoped to the app
-      # repos, `actions: write` on the provisioner repo only. The worst a leak
-      # buys is starting the provisioner — which re-derives everything it needs
-      # from prod-side and GitHub-side state and refuses anything unreviewed. It
-      # is safe to reference from a file the agent could in principle read for the
-      # same reason as before: the agent's PAT has Contents + Pull requests but
-      # NOT Workflows, so it cannot author a workflow that routes this secret into
+      # PROVISIONER_DISPATCH_TOKEN is installed by the factory in this app's
+      # main-only `prod` environment. It has `actions: write` on the private
+      # provisioner repo only. The worst a leak buys is starting the provisioner —
+      # which re-derives everything it needs from prod-side and GitHub-side state
+      # and refuses anything unreviewed. It is safe to reference from a file the
+      # agent could in principle read because the job cannot enter `environment:
+      # prod` from the agent's branch, so the value never reaches a runner with
       # code it controls. That absence is load-bearing.
       - name: Ask the provisioner to make this app real, then stop
         if: steps.gate.outputs.needs_provision == 'true'
@@ -241,9 +241,9 @@ jobs:
           set -euo pipefail
 
           if [ -z "${TOKEN:-}" ]; then
-            echo "::error::PROVISIONER_DISPATCH_TOKEN is not set on the sol-apps org."
-            echo "::error::Without it a first merge never reaches prod. Set the org secret"
-            echo "::error::(fine-grained PAT, $PROVISIONER only, actions: write), scoped to the app repos."
+            echo "::error::PROVISIONER_DISPATCH_TOKEN is not installed in this app's prod environment."
+            echo "::error::Without it a first merge never reaches prod. Re-run the factory"
+            echo "::error::credential step; do not broaden ORG_ADMIN_TOKEN to organization secrets."
             exit 1
           fi
 
