@@ -1,0 +1,81 @@
+name: Greenlight PR verifier
+description: Audit an exact Greenlight PR commit or publish its required check
+
+inputs:
+  operation:
+    description: audit or report
+    required: true
+  repository:
+    description: Base owner/repository
+    required: true
+  head-repository:
+    description: Head owner/repository (audit only)
+    required: false
+  pull-request:
+    description: Pull request number (audit only)
+    required: false
+  base-sha:
+    description: Exact reviewed base commit (audit only)
+    required: false
+  head-sha:
+    description: Exact PR head commit
+    required: true
+  template-ref:
+    description: Full public verifier-bundle commit containing the canonical app template
+    required: false
+  audit-result:
+    description: Result of the permissionless audit job (report only)
+    required: false
+  run-url:
+    description: URL of the workflow run (report only)
+    required: false
+  token:
+    description: checks:write GitHub token (report only)
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Run the permissionless audit
+      if: ${{ inputs.operation == 'audit' }}
+      shell: bash
+      env:
+        GREENLIGHT_REPOSITORY: ${{ inputs.repository }}
+        GREENLIGHT_HEAD_REPOSITORY: ${{ inputs.head-repository }}
+        GREENLIGHT_PR_NUMBER: ${{ inputs.pull-request }}
+        GREENLIGHT_BASE_SHA: ${{ inputs.base-sha }}
+        GREENLIGHT_HEAD_SHA: ${{ inputs.head-sha }}
+        GREENLIGHT_TEMPLATE_REF: ${{ inputs.template-ref }}
+        GREENLIGHT_RUNNING_ACTION_REF: ${{ github.action_ref }}
+      run: >-
+        python3 "$GITHUB_ACTION_PATH/run.py"
+        --repository "$GREENLIGHT_REPOSITORY"
+        --head-repository "$GREENLIGHT_HEAD_REPOSITORY"
+        --pull-request "$GREENLIGHT_PR_NUMBER"
+        --base-sha "$GREENLIGHT_BASE_SHA"
+        --head-sha "$GREENLIGHT_HEAD_SHA"
+        --template-ref "$GREENLIGHT_TEMPLATE_REF"
+        --running-action-ref "$GREENLIGHT_RUNNING_ACTION_REF"
+
+    - name: Publish the required check
+      if: ${{ inputs.operation == 'report' }}
+      shell: bash
+      env:
+        GREENLIGHT_REPORT_TOKEN: ${{ inputs.token }}
+        GREENLIGHT_REPOSITORY: ${{ inputs.repository }}
+        GREENLIGHT_HEAD_SHA: ${{ inputs.head-sha }}
+        GREENLIGHT_AUDIT_RESULT: ${{ inputs.audit-result }}
+        GREENLIGHT_RUN_URL: ${{ inputs.run-url }}
+      run: >-
+        python3 "$GITHUB_ACTION_PATH/report.py"
+        --repository "$GREENLIGHT_REPOSITORY"
+        --head-sha "$GREENLIGHT_HEAD_SHA"
+        --audit-result "$GREENLIGHT_AUDIT_RESULT"
+        --run-url "$GREENLIGHT_RUN_URL"
+
+    - name: Refuse an unknown operation
+      if: ${{ inputs.operation != 'audit' && inputs.operation != 'report' }}
+      shell: bash
+      run: |
+        echo "::error::operation must be audit or report"
+        exit 2
