@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}}</title>
+<meta name="description" content="{{DESCRIPTION}}">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath fill='%2316A45A' fill-rule='evenodd' d='M26 6h48a20 20 0 0 1 20 20v48a20 20 0 0 1-20 20H26A20 20 0 0 1 6 74V26A20 20 0 0 1 26 6Zm24 28a16 16 0 1 0 0 32 16 16 0 0 0 0-32Z'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Hanken+Grotesk:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="design-system/tokens.css">
+<link rel="stylesheet" href="design-system/components.css">
+<script src="design-system/components.js" defer></script>
+<script src="vendor/pocketbase.umd.js"></script>
+<script src="pb-auth.js"></script>
+<style>
+/* Page-specific styling only — anything reusable belongs to the design system. */
+/* The design system gives .btn and .badge an explicit display, which beats the
+   user-agent [hidden] rule — so `el.hidden = true` sets the attribute and changes
+   nothing on screen. Every identity control here is toggled that way, so without
+   this the signed-out page shows "Sign in" AND "Sign out" at once. */
+[hidden] { display: none !important; }
+.stage { max-width: var(--content-max); margin: 0 auto; padding: var(--space-6); }
+.stage h1 { font-family: var(--font-display); font-size: var(--text-2xl); font-weight: 700; letter-spacing: -0.02em; margin: 0 0 var(--space-2); }
+.stage .lede { color: var(--text-muted); font-size: var(--text-base); margin: 0 0 var(--space-6); max-width: 62ch; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <a class="brand" href="./"><span class="brand-mark"></span><span>{{TITLE}}</span></a>
+  <div style="margin-left:auto"></div>
+  <!-- Identity. Everyone here has already been let in by the identity provider, so
+       this says who they are; it is not the access check. -->
+  <span class="badge" id="who" hidden></span>
+  <button class="btn btn--ghost" id="sign-in" hidden>Sign in</button>
+  <button class="btn btn--ghost" id="sign-out" hidden>Sign out</button>
+  <button class="btn btn--ghost btn--icon" data-theme-toggle aria-label="Toggle theme">◐</button>
+</header>
+
+<main class="stage">
+  <h1>{{TITLE}}</h1>
+  <p class="lede">{{DESCRIPTION}}</p>
+
+  <div class="card card--pad">
+    <div class="empty">
+      <h4>Nothing here yet</h4>
+      <p>Replace this starter with the app itself. Keep the design system, drop the scaffolding.</p>
+    </div>
+  </div>
+</main>
+
+<script>
+// The identity seam is pb-auth.js — use PBAuth, never a PocketBase client of your own,
+// or this app's rules and this app's idea of who is signed in will drift apart.
+const $who = document.getElementById('who');
+const $in = document.getElementById('sign-in');
+const $out = document.getElementById('sign-out');
+
+PBAuth.mode().then((access) => {
+  // Public has no login prompt and makes no OIDC request. Generated public apps
+  // normally remove these controls; the starter is safe before they do.
+  if (access !== 'keycloak') return;
+  PBAuth.onChange((user) => {
+    $in.hidden = !!user;
+    $out.hidden = !user;
+    $who.hidden = !user;
+    if (user) {
+      $who.textContent = user.name || user.email;
+      // PBAuth.isAdmin() is server-set from the grant, so it is safe to branch on for
+      // what to SHOW. What an admin may DO is still enforced by collection rules.
+      if (PBAuth.isAdmin()) $who.textContent += ' — admin';
+    }
+  });
+}).catch((err) => console.error('[app] access policy unavailable', err));
+
+$in.addEventListener('click', () => PBAuth.signIn().catch((err) => {
+  console.error('[app] sign-in failed', err);
+}));
+$out.addEventListener('click', () => PBAuth.signOut());
+</script>
+
+</body>
+</html>
