@@ -60,7 +60,7 @@ def _download(url: str, destination: Path, limit: int = MAX_DOWNLOAD) -> None:
             final = urllib.parse.urlparse(response.geturl())
             if final.scheme != "https" or final.hostname not in {
                 "codeload.github.com", "github.com", "objects.githubusercontent.com",
-                "api.github.com",
+                "release-assets.githubusercontent.com", "api.github.com",
             }:
                 raise VerificationSetupError(f"download redirected to untrusted origin {final.hostname!r}")
             total = 0
