@@ -1,0 +1,116 @@
+name: Deploy to solhann.net (simple)
+
+# The owner's own apps. A push to main is the deploy, and a new repo needs nothing but
+# this caller — its first push creates the app:
+#
+#   on:
+#     push:
+#       branches: [main]
+#     workflow_dispatch:
+#   jobs:
+#     deploy:
+#       uses: sol-apps/workflows/.github/workflows/simple.yml@main
+#       secrets: inherit
+#
+# The repo name is the slug is the subdomain: <slug>.solhann.net. A repo with pb-auth.js,
+# pb_hooks/ or pb_migrations/ also gets its own PocketBase, created on its first deploy;
+# its dashboard (/_/) takes admin@solhann.net and the one password every owner app
+# shares (`sudo owner-password` on prod).
+#
+# Everything goes over the org secret SERVER_SSH_KEY, whose forced command on prod is
+# owner-lane (platform/prod/owner): the site through the same write-only static jail as
+# always, the backend only for an app on the owner's domain. Greenlight's apps and the
+# platform deploy through deploy.yml and a reviewed merge, never through this file.
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      SLUG: ${{ github.event.repository.name }}
+      SERVER_IP: ${{ secrets.SERVER_IP }}
+    steps:
+      # actions/checkout v4.2.2, pinned to its commit.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      # The host key is pinned (org secret SERVER_HOST_KEY), never scanned per run.
+      - name: Configure SSH
+        env:
+          DEPLOY_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          HOST_KEY: ${{ secrets.SERVER_HOST_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$HOST_KEY" > ~/.ssh/known_hosts
+          echo "SSH=ssh -i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes -o BatchMode=yes" >> "$GITHUB_ENV"
+
+      # A no-op once the app has its PocketBase; on the first deploy it creates it.
+      - name: PocketBase backend
+        id: backend
+        run: |
+          if [ -f pb-auth.js ] || [ -d pb_hooks ] || [ -d pb_migrations ]; then
+            echo "pocketbase=true" >> "$GITHUB_OUTPUT"
+            $SSH "sol@$SERVER_IP" provision "$SLUG"
+          else
+            echo "pocketbase=false" >> "$GITHUB_OUTPUT"
+            echo "no pb-auth.js, pb_hooks/ or pb_migrations/: a static site"
+          fi
+
+      # Browsers always pick up the latest .css/.js: links get ?v=<sha>.
+      - name: Cache-bust asset URLs in HTML
+        run: |
+          v="${GITHUB_SHA:0:7}"
+          find . -maxdepth 3 -name '*.html' -not -path './.git/*' \
+            -exec sed -i -E "s#(\.(js|css))\"#\1?v=${v}\"#g" {} +
+
+      # Lands in /var/www/apps/<slug>/. pb_hooks/ and pb_migrations/ are server code and
+      # never go on the public site. Retries cover rrsync's lock when two apps deploy at once.
+      - name: Deploy the site
+        run: |
+          for i in 1 2 3 4 5; do
+            rsync -rlptz --delete -e "$SSH" \
+              --exclude '.git/' --exclude '.github/' --exclude 'README.md' \
+              --exclude 'pb_hooks/' --exclude 'pb_migrations/' \
+              ./ "sol@$SERVER_IP:$SLUG/" && exit 0
+            echo "rsync attempt $i failed; retrying in $((i*3))s"
+            sleep $((i*3))
+          done
+          exit 1
+
+      # Hooks hot-reload on arrival; prod's pb-migrate@<slug> watcher applies migrations
+      # (snapshot first, failures quarantined). --checksum leaves unchanged files alone so
+      # PocketBase does not restart for nothing; the empty dirs and --delete make a removed
+      # hook or migration disappear from prod too.
+      - name: Deploy hooks and migrations
+        if: steps.backend.outputs.pocketbase == 'true'
+        run: |
+          mkdir -p pb_hooks pb_migrations
+          for i in 1 2 3 4 5; do
+            rsync -rlptz --checksum --delete -e "$SSH" --rsync-path=pb-rsync \
+              ./pb_hooks ./pb_migrations "sol@$SERVER_IP:$SLUG/" && exit 0
+            echo "rsync attempt $i failed; retrying in $((i*3))s"
+            sleep $((i*3))
+          done
+          exit 1
+
+      # A new app's certificate can take a minute; say so rather than fail the deploy.
+      - name: Live
+        run: |
+          url="https://$SLUG.solhann.net/"
+          code=""
+          for _ in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url" || true)
+            if [ "$code" = 200 ]; then
+              echo "✓ $url"
+              echo "### ✓ [$SLUG.solhann.net]($url)" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::warning::$url answered ${code:-nothing} after a minute; it may still be getting its certificate"
