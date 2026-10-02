@@ -35,8 +35,8 @@ jobs:
       SLUG: ${{ github.event.repository.name }}
       SERVER_IP: ${{ secrets.SERVER_IP }}
     steps:
-      # actions/checkout v4.2.2, pinned to its commit.
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      # actions/checkout v7.0.1 (runs on Node 24), pinned to its commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
       # The host key is pinned (org secret SERVER_HOST_KEY), never scanned per run.
       - name: Configure SSH
