@@ -258,3 +258,42 @@
 .auth-menu .auth-pop b { font-size: var(--text-sm); }
 .auth-menu .auth-pop .auth-mail { font-size: var(--text-xs); color: var(--text-faint); }
 .auth-menu .auth-pop .btn { align-self: stretch; justify-content: center; margin-top: var(--space-2); }
+
+/* ==== Small screens ========================================================
+   Touch devices get 44px targets and 16px form text (anything smaller makes
+   iOS zoom the page on focus). Narrow screens get tighter gutters, full-width
+   dialogs and scrolling tables and tabs rather than a sideways page.
+   ========================================================================== */
+html { -webkit-text-size-adjust: 100%; }
+img, svg, video, canvas { max-width: 100%; }
+
+@media (pointer: coarse) {
+  .btn, .brand { min-height: 44px; }
+  .btn--sm { min-height: 40px; padding: 8px 14px; }
+  .btn--icon { width: 44px; height: 44px; }
+  .chip { height: 40px; }
+  .seg button { min-height: 40px; }
+  .navtabs a { padding: 11px 14px; }
+  .search .search-clear { width: 32px; height: 32px; right: 6px; }
+  .avatar { width: 40px; height: 40px; }
+  .list-row { min-height: 44px; }
+}
+
+@media (max-width: 700px) {
+  .input, .field input, .field select, .field textarea, .search input { font-size: 16px; }
+  .topbar { padding: 0 var(--space-4); gap: var(--space-2); }
+  .navtabs { overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
+  .navtabs::-webkit-scrollbar { display: none; }
+  .navtabs a { white-space: nowrap; }
+  .overlay { padding: 0; align-items: flex-end; }
+  .panel { width: 100%; max-height: 92dvh; border-radius: var(--radius-xl) var(--radius-xl) 0 0; }
+  .panel-head { padding: var(--space-3) var(--space-4); }
+  .card--pad { padding: var(--space-4); }
+  .stepper { overflow-x: auto; scrollbar-width: none; }
+  .step { white-space: nowrap; }
+  .toast-wrap { bottom: calc(16px + env(safe-area-inset-bottom)); left: var(--space-4); right: var(--space-4); transform: none; }
+  .toast { max-width: 100%; }
+  .code { overflow-x: auto; padding: var(--space-4); }
+  .empty { padding: var(--space-12) var(--space-4); }
+  .dtable { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+}
