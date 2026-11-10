@@ -24,7 +24,7 @@ spec.json             YOU create this — the agreed governance spec
 
 ## Identity
 
-People sign in once, at `id.solhann.net`. **Whether someone may use this app at all is
+People sign in once, at `id.greenlit.page`. **Whether someone may use this app at all is
 not this app's decision** — the identity provider refuses an authorization code to
 anyone who has not been granted access to this app, so a person without a grant never
 reaches your code at all. You do not write a login screen, a permission check for

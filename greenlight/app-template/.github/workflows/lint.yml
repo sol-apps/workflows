@@ -1,8 +1,8 @@
 name: Greenlight
 
 # This file is only a caller. pull_request_target makes GitHub load it from the
-# reviewed base branch, and both jobs call verifier code pinned to one full platform
-# commit. The audit job runs PR migrations but has no token permissions or secrets.
+# reviewed base branch, and both jobs call verifier code pinned to one full public
+# workflows commit. The audit job runs PR migrations but has no token permissions or secrets.
 # The report job starts on a fresh runner, sees no PR files, and holds only checks:write.
 
 on:
@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Audit the exact PR tree
-        uses: sol-apps/platform/greenlight/pr-verifier@120bb139e5e044988c49b9b4945255fdead8b989
+        uses: sol-apps/workflows/greenlight/pr-verifier@7ffc951d7c86de39b8eee5475fbc3852dec30e32
         with:
           operation: audit
           repository: ${{ github.repository }}
@@ -30,7 +30,7 @@ jobs:
           pull-request: ${{ github.event.pull_request.number }}
           base-sha: ${{ github.event.pull_request.base.sha }}
           head-sha: ${{ github.event.pull_request.head.sha }}
-          template-ref: 120bb139e5e044988c49b9b4945255fdead8b989
+          template-ref: 7ffc951d7c86de39b8eee5475fbc3852dec30e32
 
   report:
     name: greenlight-report
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Publish the required check on the PR head
-        uses: sol-apps/platform/greenlight/pr-verifier@120bb139e5e044988c49b9b4945255fdead8b989
+        uses: sol-apps/workflows/greenlight/pr-verifier@7ffc951d7c86de39b8eee5475fbc3852dec30e32
         with:
           operation: report
           repository: ${{ github.repository }}
