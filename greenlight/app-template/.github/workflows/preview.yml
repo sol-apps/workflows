@@ -1,17 +1,12 @@
 name: Dev preview
 
-# Serves this pull request at greenlightdev.solhann.net while it is open, so a reviewer
+# Serves this pull request at preview.greenlit.page while it is open, so a reviewer
 # can USE the app before approving it. The review gate showed a diff and nothing
 # runnable; this is the other half of it.
 #
 # This file holds no repo code and makes no decisions. It fires one workflow_dispatch at
 # the private previewer, which owns the only credential. The slug, PR number and commit
 # are re-validated there and again on the preview box.
-#
-# There used to be an owner guard on this job, pinning it to the old dev org, because
-# the file was generated into that org and travelled to prod at promotion, where it had
-# to be inert. One org now, and previewing is exactly what should happen on an open
-# pull request in it — so the guard is gone rather than retargeted.
 #
 # WHY THE SECRET IS SAFE HERE: PREVIEWER_DISPATCH_TOKEN is scoped to the previewer repo,
 # actions: write only, and the build agent's PAT has Contents + Pull requests but NOT
@@ -69,7 +64,7 @@ jobs:
 
           if [ "$code" = "204" ]; then
             echo "✓ preview $ACTION dispatched for $SLUG PR #$PR @ ${SHA:0:7}"
-            [ "$ACTION" = "up" ] && echo "  https://greenlightdev.solhann.net/$SLUG-pr$PR/"
+            [ "$ACTION" = "up" ] && echo "  https://preview.greenlit.page/$SLUG-pr$PR/"
             exit 0
           fi
 
