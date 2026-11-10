@@ -76,13 +76,32 @@ REQUIRED_FILES = PROTECTED_FILES
 #
 # Unreachable means REFUSED, not skipped. A change to these files that cannot be shown
 # to be a convergence is precisely the change this check exists to stop.
+#
+# The template is the one on the app's own forge: GitHub's for a GitHub app, and for a
+# Forgejo app the instance's Forgejo, which is where gl-provisiond generated it from.
+# The forge is read from this checkout's origin. Forgejo's deploy controller holds the
+# same files to its own trusted copy regardless, so this is the early warning there.
 TEMPLATE_RAW = "https://raw.githubusercontent.com/sol-apps/app-template/main/%s"
+FORGEJO_RAW = "https://%s/sol-apps/app-template/raw/branch/main/%s"
+
+
+def template_url(path):
+    try:
+        origin = subprocess.run(["git", "-C", REPO, "remote", "get-url", "origin"],
+                                capture_output=True, text=True, timeout=20).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        origin = ""
+    m = re.match(r"^(?:https://(?:[^@/]*@)?|[^@/:]+@)([a-z0-9.-]+)[:/]", origin)
+    host = m.group(1) if m else ""
+    if not host or host == "github.com":
+        return TEMPLATE_RAW % path
+    return FORGEJO_RAW % (host, path)
 
 
 def canonical_template(path):
     """The template's own copy of `path`, or None if it could not be read."""
     try:
-        with urllib.request.urlopen(TEMPLATE_RAW % path, timeout=20) as resp:
+        with urllib.request.urlopen(template_url(path), timeout=20) as resp:
             if resp.getcode() != 200:
                 return None
             return resp.read().decode("utf-8")
@@ -106,6 +125,26 @@ def tracked_files():
         ["git", "ls-files"], capture_output=True, text=True, check=True
     ).stdout
     return [p for p in out.splitlines() if p]
+
+
+def default_range():
+    """What to compare when no base and head were given (a run by hand, or by the build
+    agent in its sandbox): this checkout against the default branch on origin. A fresh
+    clone already has origin/main; a shallow or single-branch one has it after a fetch.
+    Returns ("", "") if there is no origin to compare against."""
+    def git(*args):
+        return subprocess.run(["git", *args], capture_output=True, text=True, timeout=120)
+    try:
+        if git("rev-parse", "--verify", "--quiet", "origin/main^{commit}").returncode != 0:
+            git("fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main")
+        if git("rev-parse", "--verify", "--quiet", "origin/main^{commit}").returncode != 0:
+            return "", ""
+        if git("merge-base", "origin/main", "HEAD").returncode != 0:
+            # No common commit in a shallow clone: deepen until there is one.
+            git("fetch", "--quiet", "--unshallow", "origin")
+    except (OSError, subprocess.SubprocessError):
+        return "", ""
+    return "origin/main", "HEAD"
 
 
 def changed_files(base, head):
@@ -434,6 +473,8 @@ def check_hooks(spec, files):
 def main():
     base = sys.argv[1] if len(sys.argv) > 1 else ""
     head = sys.argv[2] if len(sys.argv) > 2 else ""
+    if not base and not head:
+        base, head = default_range()
 
     files = tracked_files()
     spec = load_spec(base)
